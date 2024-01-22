@@ -120,6 +120,8 @@ def process_reads(file_path):
     # Dizionario delle qualità per le sequenze delle read
     quality_lines = {}
 
+    confronto_values = {}
+
     # Leggi le sequenze da file
     read_sequences,quality_lines = read_sequences_from_file(file_path, file_extension)
 
@@ -130,38 +132,44 @@ def process_reads(file_path):
 
     # Ciclo sulle read e confronto con i rappresentanti
     # Definisci la soglia per la differenza di lunghezza
-    valore_soglia = 0.0006
-
+    valore_soglia = 0.004
+    contatore = 0
+    valore_massimo = 0
     # Ciclo sulle read e confronto con i rappresentanti
     for read_id, read_sequence in read_sequences.items():
 
         # Se la read è già un rappresentante, passa alla prossima iterazione
+        contatore += 1
+        print(f"Siamo al {contatore}/{len(read_sequences)} e attualmente i rappresentanti sono {len(representatives)}")
+
         if read_id in representatives:
             continue
-
         best_match_representative = None
         best_match_distance = float('inf')
         best_num_sfs = 0
 
         # Confronto con tutti i rappresentanti
         for representative_id, representative_sequence in representatives.items():
-            distance = calculate_sequence_distance(read_sequence, representative_sequence)
             sfs_read_corr, num_sfs_read_corr = stringhe_specifiche(read_sequence, representative_sequence)
-            
             num_max_sottostringhe_ottenibili = (len(read_sequence)*(len(read_sequence)+1))/2;
             result_check = 2 * (len(read_sequence) / (len(read_sequence) + len(representative_sequence)))*(num_sfs_read_corr/num_max_sottostringhe_ottenibili)
             valore_confronto = round(result_check, 6)
-            #print(f"Lunghezza read {len(read_sequence)} ")
-            #print(f"Lunghezza rapp {len(representative_sequence)} ")
-            #print(f"Num sottostringhe ottenute {num_sfs_read_corr} ")
-            #print(f"num max sottostringhe {num_max_sottostringhe_ottenibili} ")
-            #print(f"calcolo {(len(read_sequence) + len(representative_sequence))} ")
+            print(f"Lunghezza read {len(read_sequence)} ")
+            print(f"Lunghezza rapp {len(representative_sequence)} ")
+            print(f"Num sottostringhe ottenute {num_sfs_read_corr} ")
+            print(f"num max sottostringhe {num_max_sottostringhe_ottenibili} ")
+            print(f"calcolo {valore_confronto} ")
             # Aggiorna il miglior rappresentante se la distanza è minore
             if  valore_confronto < best_match_distance:
                 best_match_distance = num_sfs_read_corr
                 best_match_representative = representative_id
                 best_num_sfs = num_sfs_read_corr
+                #confronto_values[read_id] = valore_confronto
+                if valore_confronto > valore_massimo:
+                    valore_massimo = valore_confronto
+                    confronto_values[read_id] = valore_confronto
             #print(f"Questo è il valore del sfs {valore_confronto} ")
+            
         # Verifica la lunghezza e se soddisfa la regola
         if valore_confronto <= valore_soglia:
             # La differenza di lunghezza è inferiore o uguale alla soglia, assegna la read al rappresentante
@@ -177,7 +185,7 @@ def process_reads(file_path):
             # Crea un nuovo cluster con la read come rappresentante
             clusters[read_id] = [read_id]
 
-    return representatives, clusters, read_sequences, quality_lines, file_extension
+    return representatives, clusters, read_sequences, quality_lines, file_extension, confronto_values
 
 def save_clusters_to_file(clusters, read_sequences, quality_lines, file_extension):
     for representative_id, cluster_reads in clusters.items():
@@ -246,9 +254,14 @@ def main():
     if reads_count == -1:
         return
 
-    representatives, clusters, read_sequences, quality_lines, file_extension = process_reads(file_path)
+    representatives, clusters, read_sequences, quality_lines, file_extension, confronto_values = process_reads(file_path)
     
     save_clusters_to_file(clusters, read_sequences, quality_lines, file_extension)
+
+    log_file_path = 'log.txt'
+    with open(log_file_path, 'w') as log_file:
+        for read_id, confronto_value in confronto_values.items():
+            log_file.write(f"{read_id}: {confronto_value}\n")
 
     print(f"Il numero di reads nel file '{file_path}' è: {len(read_sequences)}")
     print(f"Il numero di cluster è: {len(clusters)}")
@@ -264,14 +277,7 @@ def main():
     tempo_trascorso = tempo_finale - tempo_iniziale
     print(f"Tempo impiegato: {tempo_trascorso} secondi")
 
-
-
-def calculate_sequence_distance(seq1, seq2):
-    # Sostituisci questa funzione con il tuo metodo di confronto delle sequenze
-    # In questo esempio, si calcola la differenza nella lunghezza delle sequenze
-    return abs(len(seq1) - len(seq2))
-
-def stringhe_specifiche(stringa1, stringa2):
+def stringhe_specifiche_old(stringa1, stringa2):
     # Inizializziamo una lista vuota per memorizzare le stringhe specifiche
     stringhe_specifiche_list = []
 
@@ -286,6 +292,26 @@ def stringhe_specifiche(stringa1, stringa2):
                 stringhe_specifiche_list.append(sottostringa)
 
     return stringhe_specifiche_list, len(stringhe_specifiche_list)
+
+def stringhe_specifiche(stringa1, stringa2):
+    # Inizializziamo una lista vuota per memorizzare le stringhe specifiche
+    old_St = []
+    print("Start: Calcolo Stringhe Spec")
+    # Iteriamo attraverso tutte le sottostringhe della prima stringa
+    for i in range(len(stringa1)):
+        for j in range(i + 1, len(stringa1) + 1):
+            sottostringa = stringa1[i:j]
+
+            # Verifichiamo se la sottostringa non è presente nella seconda stringa
+            if sottostringa not in stringa2:
+                # Verifichiamo se nessuna sottostringa più corta è una sottostringa di questa
+                if all(sottostringa not in old_str for old_str in old_St):
+                    # Aggiungiamo la sottostringa alla lista delle stringhe specifiche
+                    old_St.append(sottostringa)
+    # Troviamo St come l'insieme di tutte le stringhe da old_St per cui nessuna sottostringa più corta è una sottostringa
+    St = [s for s in old_St if all(s not in other_str for other_str in old_St if len(other_str) < len(s))]
+
+    return St, len(St)
 
 if __name__ == "__main__":
     main()
