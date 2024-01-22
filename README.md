@@ -1,4 +1,4 @@
-# README - File di Clustering di Reads
+# README - isONspec
 
 ## Descrizione
 Questo script Python è progettato per eseguire il clustering di sequenze di read genomiche. Il clustering viene eseguito utilizzando un algoritmo basato su confronti di stringhe specifiche (SFS) tra le sequenze di read. L'algoritmo confronta ogni read con i rappresentanti dei cluster esistenti e decide se assegnare la read a un cluster esistente o crearne uno nuovo.
