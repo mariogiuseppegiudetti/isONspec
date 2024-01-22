@@ -19,7 +19,7 @@ python nome_script.py <percorso_del_file_da_processare> --threads <numero_di_thr
 
 ## Output
 
-L'output dello script sarà una serie di directory, ognuna contenente i file relativi a un cluster specifico. Ogni directory avrà il nome "cluster_\<rappresentante>" e conterrà un file di reads associate al cluster (cluster_\<rappresentante>_reads.fasta o cluster_\<rappresentante>_reads.fastq) e, se applicabile, un file di qualità associato (cluster_\<rappresentante>_reads.qual).
+L'output dello script sarà una serie di directory, ognuna contenente i file relativi a un cluster specifico. Ogni directory avrà il nome "cluster_\<rappresentante>" e conterrà un file di reads associate al cluster (cluster_\<rappresentante>_reads.fasta o cluster_\<rappresentante>_reads.fastq).
 
 Un file di log (`log.txt`) verrà creato nella directory di esecuzione contenente i valori di confronto tra le read e i rappresentanti.
 
