@@ -7,6 +7,44 @@ import shutil
 import subprocess
 from colorama import Fore, Style
 
+def create_cluster_folders(results_folder, clusters, original_names):
+    # Create the results_cluster folder if it doesn't exist
+    results_cluster_folder = os.path.join(results_folder, "results_cluster")
+    if not os.path.exists(results_cluster_folder):
+        os.makedirs(results_cluster_folder)
+
+    # Iterate through clusters
+    for cluster_representative, cluster_members in clusters.items():
+        cluster_folder = os.path.join(results_cluster_folder, f"cluster_{cluster_representative}")
+
+        # Create a folder for each cluster
+        if not os.path.exists(cluster_folder):
+            os.makedirs(cluster_folder)
+
+        # Create a file named "all_clustered_reads.fastq" in each cluster folder
+        cluster_fastq_path = os.path.join(cluster_folder, "all_clustered_reads.fastq")
+        with open(cluster_fastq_path, 'w') as cluster_fastq:
+            for read_id in cluster_members:
+                # Use the original name if available, otherwise use the modified name
+                original_name = original_names.get(read_id, read_id)
+
+                # Write the original name of the read to the file
+                cluster_fastq.write(f"{original_name}")
+
+                # Get the file path of the read and copy its content to the cluster file
+                read_relative_path = os.path.join("tmp_reads", f"{read_id}.fastq")
+                read_full_path = os.path.join(results_folder, read_relative_path)
+                with open(read_full_path, 'r') as read_file:
+                    # Skip the first line (header line) of the read file
+                    next(read_file, None)
+
+                    # Copy the remaining content to the cluster file
+                    shutil.copyfileobj(read_file, cluster_fastq)
+
+    print(f"Cluster folders created in {results_cluster_folder}")
+
+
+
 def sum_overlap_sfs(file_path):
     total_sum = 0
 
@@ -36,17 +74,25 @@ def modifica_prima_riga(file_path):
         lines = file.readlines()
 
     if lines:
+
+        id_read_originale = lines[0]
+
         # Ottieni il nome del file senza estensione
-        nome_file = os.path.splitext(os.path.basename(file_path))[0]
+        nome_file_originale = os.path.splitext(os.path.basename(file_path))[0]
 
         # Modifica la prima riga con il formato desiderato
-        lines[0] = f"@{nome_file}\n"
+        lines[0] = f"@{nome_file_originale}\n"
 
         # Scrivi le modifiche nel file
         with open(file_path, 'w') as file:
             file.writelines(lines)
 
+    return id_read_originale
+
 def modifica_file_txt_cartella(cartella):
+    # Dizionario per i nomi originali delle read
+    original_names = {}
+
     # Verifica che il percorso della cartella esista
     if not os.path.exists(cartella):
         print(f"La cartella {cartella} non esiste.")
@@ -58,9 +104,19 @@ def modifica_file_txt_cartella(cartella):
 
         # Verifica se il file è in formato fastq
         if filename.lower().endswith('.fastq') and os.path.isfile(file_path):
-            #print(f"Modifica del file: {file_path}")
-            modifica_prima_riga(file_path)
+            # Ottieni il nome originale del file senza estensione prima della modifica
+            nome_file_originale = os.path.splitext(os.path.basename(file_path))[0]
+            print(f"questo è il nome originale {nome_file_originale}")
+            # Modifica la prima riga del file
+            id_originale = modifica_prima_riga(file_path)
+            
+            # Ottieni il nuovo nome dell'id dopo la modifica
+            nuovo_nome_id = extract_read_info(file_path)
 
+            # Salva il nome originale nel dizionario dei nomi originali
+            original_names[nuovo_nome_id] = id_originale
+    
+    return original_names
 
 
 def wait_for_file(file_path, timeout=10, polling_interval=1):
@@ -288,6 +344,8 @@ def process_reads(folder_path):
 
     comparison_values = {}
     soglia_meno_cinquanta ={}
+
+
     read_sequences = populate_read_sequences(folder_path)
     #modifica_file_txt_cartella('tmp_reads')
     print('Start')
@@ -298,7 +356,7 @@ def process_reads(folder_path):
 
     for read_id, info in read_sequences.items():
         length_read = info['length_read']
-        file_name = info['file_name']        
+        file_name = info['file_name']
 
         if not first_file:
             index_path = calculate_index(file_name, read_id)
@@ -342,12 +400,6 @@ def process_reads(folder_path):
                 print(f'la differenza tra lunghezza e overlap è {diff_on_total}')
                 percentuale_diff_length = round(diff_on_total/length_read*100,2)
 
-                if(percentuale_diff_length>=50):
-                   print(f"{Fore.GREEN}SIMILE! con percentuale di somiglianza {percentuale_diff_length}{Style.RESET_ALL}")
-                else:
-                   print(f"{Fore.RED}NON SIMILE! con percentuale di somiglianza {percentuale_diff_length}{Style.RESET_ALL}")
-                   soglia_meno_cinquanta[read_id] = percentuale_diff_length
-                
                 delete_file(file_search_out)
                 
                 #if comparison_value < best_match_distance:
@@ -363,6 +415,14 @@ def process_reads(folder_path):
                     #print(f'Valere attuale {comparison_value}, valore massimo old {max_value}')
                     max_value = comparison_value
                     comparison_values[read_id] = comparison_value
+
+                if(percentuale_diff_length>=30):
+                   print(f"{Fore.GREEN}SIMILE! Con percentuale di somiglianza {percentuale_diff_length}{Style.RESET_ALL}")
+                   break
+                else:
+                   print(f"{Fore.RED}NON SIMILE! Con percentuale di somiglianza {percentuale_diff_length}{Style.RESET_ALL}")
+                   soglia_meno_cinquanta[read_id] = percentuale_diff_length
+                
 
             #if best_match_distance <= threshold_value:
             if (best_match_percentuale>=30):
@@ -398,17 +458,42 @@ def main():
     # Set the desired number of threads
     threading._DummyThread._maxsize = num_threads
     
+    start_time_total = time.time()
+
+    start_time_modifica_file = time.time()
     renamed_file_path = rename_file(file_path)
     output_folder_path = split_reads(renamed_file_path)
-    modifica_file_txt_cartella('tmp_reads')
+    original_names = modifica_file_txt_cartella('tmp_reads')
+    end_time_modifica_file = time.time()
+
+    start_time_process_reads = time.time()
     lista_meno_cinq, max_value, representatives, clusters, read_sequences, quality_lines, comparison_values = process_reads(output_folder_path)
+    end_time_process_reads = time.time()
+
+
     log_file_path = "comparison_values_log.txt"  # Imposta il percorso del file di log
     write_comparison_values_to_log(comparison_values, log_file_path)
+
+    start_time_create_clusters = time.time()
+    results_folder = os.path.dirname(os.path.abspath(file_path))
+    print(f"Questa è la folder di risultato {results_folder}")
+    create_cluster_folders(results_folder, clusters, original_names)
+    end_time_create_clusters = time.time()
+
+
     print(f'There are {len(representatives)} representatives')
     print(f'Questo è il valore max di distanza {max_value}')
     delete_folder("tmp_search")
     delete_folder("tmp_index")
     delete_folder("tmp_reads")
     print(f'Ci sono {len(lista_meno_cinq)} reads differenti')
+    
+    end_time_total = time.time()
+
+    print(f"Tempo per modifica_file_txt_cartella: {end_time_modifica_file - start_time_modifica_file} secondi")
+    print(f"Tempo per process_reads: {end_time_process_reads - start_time_process_reads} secondi")
+    print(f"Tempo per create_cluster_folders: {end_time_create_clusters - start_time_create_clusters} secondi")
+    print(f"Tempo totale di esecuzione: {end_time_total - start_time_total} secondi")
+
 if __name__ == "__main__":
     main()
