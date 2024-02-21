@@ -7,15 +7,29 @@ import shutil
 import subprocess
 from colorama import Fore, Style
 
-def create_cluster_folders(results_folder, clusters, original_names):
+def calculate_distance(frequencies_rep, info_read):
+    freq_A_diff = abs(frequencies_rep['freq_A'] - info_read['freq_A'])
+    freq_C_diff = abs(frequencies_rep['freq_C'] - info_read['freq_C'])
+    freq_G_diff = abs(frequencies_rep['freq_G'] - info_read['freq_G'])
+    freq_T_diff = abs(frequencies_rep['freq_T'] - info_read['freq_T'])
+
+    return freq_A_diff + freq_C_diff + freq_G_diff + freq_T_diff
+
+def create_cluster_folders(clusters, original_names):
     # Create the results_cluster folder if it doesn't exist
-    results_cluster_folder = os.path.join(results_folder, "results_cluster")
+    #results_cluster_folder = os.path.join(results_folder, "results_cluster")
+    
+    results_cluster_folder = "results_cluster"
+
     if not os.path.exists(results_cluster_folder):
         os.makedirs(results_cluster_folder)
 
+    # Variable di conteggio per il numero dei cluster
+    cluster_counter = 1
+
     # Iterate through clusters
     for cluster_representative, cluster_members in clusters.items():
-        cluster_folder = os.path.join(results_cluster_folder, f"cluster_{cluster_representative}")
+        cluster_folder = os.path.join(results_cluster_folder, f"cluster_{cluster_counter}")
 
         # Create a folder for each cluster
         if not os.path.exists(cluster_folder):
@@ -33,13 +47,14 @@ def create_cluster_folders(results_folder, clusters, original_names):
 
                 # Get the file path of the read and copy its content to the cluster file
                 read_relative_path = os.path.join("tmp_reads", f"{read_id}.fastq")
-                read_full_path = os.path.join(results_folder, read_relative_path)
-                with open(read_full_path, 'r') as read_file:
+                #read_full_path = os.path.join(results_folder, read_relative_path)
+                with open(read_relative_path, 'r') as read_file:
                     # Skip the first line (header line) of the read file
                     next(read_file, None)
 
                     # Copy the remaining content to the cluster file
                     shutil.copyfileobj(read_file, cluster_fastq)
+        cluster_counter += 1
 
     print(f"Cluster folders created in {results_cluster_folder}")
 
@@ -285,41 +300,44 @@ def execute_search(index_output_path, read_path, read_id):
         return None
 
 def populate_read_sequences(folder_path):
-    # Dictionary for ID, length, and file name information of reads
+    # Dictionary for ID, length, file name, and nucleotide frequency information of reads
     read_info = {}
 
     try:
         # List of files in the folder
         file_list = os.listdir(folder_path)
 
-        for file in file_list:
+        for file_name in file_list:
             # Check if the file is of type FASTQ or FQ
-            if file.lower().endswith(('.fastq', '.fq')):
-                file_path = os.path.join(folder_path, file)
+            if file_name.lower().endswith(('.fastq', '.fq')):
+                file_path = os.path.join(folder_path, file_name)
 
                 with open(file_path, 'r') as file:
-                    # Initialize an empty list for each file's information
-                    info_file = []
-
                     # Read lines from the file
                     lines = file.readlines()
 
-                    # Iterate over the lines of the file
-                    i = 0
-                    while i < len(lines):
-                        # Check if the line is a read ID
-                        if lines[i].startswith('@'):
-                            read_id = lines[i].strip().replace('@', '')
-                            i += 1
+                    # Iterate over the lines in groups of 4
+                    for i in range(0, len(lines), 4):
+                        # Extract read ID, sequence, and quality information
+                        read_id = lines[i].strip().replace('@', '')
+                        sequence = lines[i + 1].strip()
+                        length_read = len(sequence)
 
-                            # Read the sequence
-                            sequence = lines[i].strip()
-                            length_read = len(sequence)
+                        # Calculate nucleotide frequencies
+                        freq_A = round(sequence.count('A') / length_read * 100, 2)
+                        freq_C = round(sequence.count('C') / length_read * 100, 2)
+                        freq_G = round(sequence.count('G') / length_read * 100, 2)
+                        freq_T = round(sequence.count('T') / length_read * 100, 2)
 
-                            # Save the information in the read_info dictionary
-                            read_info[read_id] = {'length_read': length_read, 'file_name': file_path}
-
-                        i += 1
+                        # Save the information in the read_info dictionary
+                        read_info[read_id] = {
+                            'length_read': length_read,
+                            'file_name': file_path,
+                            'freq_A': freq_A,
+                            'freq_C': freq_C,
+                            'freq_G': freq_G,
+                            'freq_T': freq_T
+                        }
 
         # Sort the read_info dictionary by the length of the reads
         read_info = dict(sorted(read_info.items(), key=lambda x: x[1]['length_read'], reverse=True))
@@ -353,6 +371,7 @@ def process_reads(folder_path):
     first_file = False
     max_value = 0
     threshold_value = 0.01
+    min_percentuale = 100
 
     for read_id, info in read_sequences.items():
         length_read = info['length_read']
@@ -360,7 +379,11 @@ def process_reads(folder_path):
 
         if not first_file:
             index_path = calculate_index(file_name, read_id)
-            representatives[read_id] = {'length_read': length_read, 'index_path': index_path}
+            # Read the frequencies from the index output
+            frequencies = {'freq_A': info['freq_A'], 'freq_C': info['freq_C'], 'freq_G': info['freq_G'], 'freq_T': info['freq_T']}
+            representatives[read_id] = {'length_read': length_read, 'index_path': index_path, 'frequencies': frequencies}
+            clusters[read_id] = [read_id]
+            print(f'La frequenza è A:{info['freq_A']} C:{info['freq_C']} G:{info['freq_G']} T:{info['freq_T']}')
             first_file = True
             continue
         else:
@@ -368,9 +391,11 @@ def process_reads(folder_path):
             best_match_distance = float('inf')
             best_num_sfs = 0
             best_match_percentuale = 0
-            number_max_substrings_obt = (length_read * (length_read + 1)) / 2;
+            #number_max_substrings_obt = (length_read * (length_read + 1)) / 2;
+            print(f'La frequenza è A:{info['freq_A']} C:{info['freq_C']} G:{info['freq_G']} T:{info['freq_T']}')
 
-            for rep_id, rep_info in representatives.items():
+
+            for rep_id, rep_info in sorted(representatives.items(), key=lambda x: calculate_distance(x[1]['frequencies'], info), reverse=True):
                 length_representative = rep_info['length_read']
                 index_representative = rep_info['index_path']
                 print(f'Rep index: {index_representative}')
@@ -379,18 +404,18 @@ def process_reads(folder_path):
                 file_search_out = execute_search(index_representative, file_name, read_id)
                 #print(f'Search output file: {file_search_out}')                
                 
-                number_sfs = count_rows(file_search_out)
+                #number_sfs = count_rows(file_search_out)
                 #print(f'Number of sfs: {number_sfs}')                
                 
-                length_check = (length_read / (length_read + length_representative))
+                #length_check = (length_read / (length_read + length_representative))
                 #print(f'Length check: {length_check}')
                 
-                sfs_check = (number_sfs / number_max_substrings_obt)
+                #sfs_check = (number_sfs / number_max_substrings_obt)
                 #print(f'Sfs check: {sfs_check}')
                
-                result_check = 2 * length_check * sfs_check
-                print(f'Result check, threshold to set: {result_check}')
-                comparison_value = round(result_check, 6)
+                #result_check = 2 * length_check * sfs_check
+                #print(f'Result check, threshold to set: {result_check}')
+                #comparison_value = round(result_check, 6)
 
                 # Altra Logica su OVERLAP SFS
                 length_overlap_sfs = sum_overlap_sfs(file_search_out)
@@ -411,21 +436,23 @@ def process_reads(folder_path):
                     best_match_percentuale = percentuale_diff_length;
                     best_match_representative = rep_id;
                     print(f'{Fore.MAGENTA}Questo è il branch di selezione best {best_match_percentuale} {Style.RESET_ALL}')
-                if comparison_value > max_value:
+                #if comparison_value > max_value:
                     #print(f'Valere attuale {comparison_value}, valore massimo old {max_value}')
-                    max_value = comparison_value
-                    comparison_values[read_id] = comparison_value
+                #    max_value = comparison_value
+                #    comparison_values[read_id] = comparison_value
+                if(percentuale_diff_length<min_percentuale):
+                    min_percentuale = percentuale_diff_length
 
-                if(percentuale_diff_length>=30):
-                   print(f"{Fore.GREEN}SIMILE! Con percentuale di somiglianza {percentuale_diff_length}{Style.RESET_ALL}")
-                   break
+                if(percentuale_diff_length>=10):
+                    print(f"{Fore.GREEN}SIMILE! Con percentuale di somiglianza {percentuale_diff_length}{Style.RESET_ALL}")
+                    break
                 else:
                    print(f"{Fore.RED}NON SIMILE! Con percentuale di somiglianza {percentuale_diff_length}{Style.RESET_ALL}")
                    soglia_meno_cinquanta[read_id] = percentuale_diff_length
                 
 
             #if best_match_distance <= threshold_value:
-            if (best_match_percentuale>=30):
+            if (best_match_percentuale>=10):
                 print(f'{Fore.YELLOW}opto per il cluste già esistente, perché {best_match_percentuale}{Style.RESET_ALL}')
                 if best_match_representative in clusters:
                     clusters[best_match_representative].append(read_id)
@@ -435,12 +462,12 @@ def process_reads(folder_path):
                 print(f'{Fore.BLUE}opto per crea un nuovo rappresentante. {best_match_percentuale}{Style.RESET_ALL}')
                 index_path = calculate_index(file_name, read_id)
                 # The length difference is above the threshold, insert the read as a new representative
-                representatives[read_id] = {'length_read': length_read, 'index_path': index_path}
+                representatives[read_id] = {'length_read': length_read, 'index_path': index_path, 'frequencies': frequencies}
 
                 # Create a new cluster with the read as the representative
                 clusters[read_id] = [read_id]
 
-    return soglia_meno_cinquanta, max_value, representatives, clusters, read_sequences, quality_lines, comparison_values
+    return min_percentuale, soglia_meno_cinquanta, max_value, representatives, clusters, read_sequences, quality_lines, comparison_values
 
 def main():
 
@@ -467,19 +494,21 @@ def main():
     end_time_modifica_file = time.time()
 
     start_time_process_reads = time.time()
-    lista_meno_cinq, max_value, representatives, clusters, read_sequences, quality_lines, comparison_values = process_reads(output_folder_path)
+    min_percentuale, lista_meno_cinq, max_value, representatives, clusters, read_sequences, quality_lines, comparison_values = process_reads(output_folder_path)
     end_time_process_reads = time.time()
-
 
     log_file_path = "comparison_values_log.txt"  # Imposta il percorso del file di log
     write_comparison_values_to_log(comparison_values, log_file_path)
 
     start_time_create_clusters = time.time()
-    results_folder = os.path.dirname(os.path.abspath(file_path))
-    print(f"Questa è la folder di risultato {results_folder}")
-    create_cluster_folders(results_folder, clusters, original_names)
+    #results_folder = os.path.dirname(os.path.abspath(file_path))
+    #print(f"Questa è la folder di risultato {results_folder}")
+    create_cluster_folders(clusters, original_names)
     end_time_create_clusters = time.time()
 
+    for chiave, valore in clusters.items():
+        lunghezza_elemento = len(valore)
+        print(f"Lunghezza dell'elemento associato a {chiave}: {lunghezza_elemento}")
 
     print(f'There are {len(representatives)} representatives')
     print(f'Questo è il valore max di distanza {max_value}')
@@ -495,5 +524,6 @@ def main():
     print(f"Tempo per create_cluster_folders: {end_time_create_clusters - start_time_create_clusters} secondi")
     print(f"Tempo totale di esecuzione: {end_time_total - start_time_total} secondi")
 
+    print(f"Percentuale minima intracluster {min_percentuale}")
 if __name__ == "__main__":
     main()
