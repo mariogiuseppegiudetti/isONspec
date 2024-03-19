@@ -3,315 +3,460 @@ import os
 import time
 import threading
 import argparse
+import shutil
+import subprocess
+from colorama import Fore, Style
 
-# Dizionario per associare il formato del file al carattere di inizio di ogni read
-format_to_start_char = {'fastq': '@', 'fq': '@', 'fasta': '>', 'fa': '>'}
+def create_cluster_folders(results_folder, clusters, original_names):
+    # Create the results_cluster folder if it doesn't exist
+    results_cluster_folder = os.path.join(results_folder, "results_cluster")
+    if not os.path.exists(results_cluster_folder):
+        os.makedirs(results_cluster_folder)
 
-def count_reads(file_path):
-    # Verifica l'estensione del file per determinare il formato
-    file_extension = get_file_extension(file_path)
+    # Iterate through clusters
+    for cluster_num, read_ids in enumerate(clusters.values(), start=1):
+        cluster_folder = os.path.join(results_cluster_folder, f"cluster_{cluster_num}")
 
-    # Verifica che l'estensione del file sia supportata
-    if file_extension not in format_to_start_char:
-        print("Formato del file non supportato.")
-        return -1
+        # Create a folder for each cluster
+        if not os.path.exists(cluster_folder):
+            os.makedirs(cluster_folder)
 
-    start_char = format_to_start_char[file_extension]
+        # Create a file named "all_clustered_reads.fastq" in each cluster folder
+        cluster_fastq_path = os.path.join(cluster_folder, "all_clustered_reads.fastq")
+        with open(cluster_fastq_path, 'w') as cluster_fastq:
+            for read_id in read_ids:
+                # Write the original name of the read to the file
+                original_name = original_names.get(read_id, read_id)
+                cluster_fastq.write(f"@{original_name}\n")
 
-    # Contatore per il numero di reads
-    reads_count = 0
+                # Get the file path of the read and copy its content to the cluster file
+                read_path = os.path.join(results_folder, f"{read_id}.fastq")
+                with open(read_path, 'r') as read_file:
+                    shutil.copyfileobj(read_file, cluster_fastq)
 
-    # Apri il file e conta le reads
+    print(f"Cluster folders created in {results_cluster_folder}")
+
+def sum_overlap_sfs(file_path):
+    total_sum = 0
+
     with open(file_path, 'r') as file:
         for line in file:
-            if line.startswith(start_char):
-                reads_count += 1
+            # Dividi la riga utilizzando spazi multipli come delimitatori
+            values = line.split()
 
-    return reads_count
+            # Se ci sono abbastanza valori e il secondo valore è un numero, sommalo al totale
+            if len(values) > 2:
+                try:
+                    second_number = int(values[2])
+                    total_sum += second_number
+                except ValueError:
+                    # Gestisci il caso in cui il secondo valore non è un intero
+                    print(f"Skipping line due to non-integer second number: {line}")
 
-def get_file_extension(file_path):
-    return file_path.split('.')[-1].lower()
+    return total_sum
 
-def read_sequences_from_file(file_path, file_format):
-    """
-    Legge un file FASTA o FASTQ e restituisce un dizionario con gli identificatori di read come chiavi e le sequenze come valori.
-    """
-    read_sequences = {}
-    quality_lines = {}  # Contenitore per le linee di qualità (solo per FASTQ)
+def write_comparison_values_to_log(comparison_values, log_file_path):
+    with open(log_file_path, 'w') as log_file:
+        for read_id, comparison_value in comparison_values.items():
+            log_file.write(f"{read_id}: {comparison_value}\n")
 
+def modifica_prima_riga(file_path):
     with open(file_path, 'r') as file:
-        current_read_id = None
-        current_read_sequence = ""
-        current_quality_sequence = ""
-        next_is_quality_line = False  # Indica se la linea corrente è una linea di qualità (solo per FASTQ)
+        lines = file.readlines()
 
-        for line in file:
-            line = line.strip()
+    if lines:
+        # Ottieni il nome del file senza estensione
+        nome_file_originale = os.path.splitext(os.path.basename(file_path))[0]
 
-            if file_format.lower() in ['fasta', 'fa']:
-                if line.startswith(">"):
-                    # Inizio di una nuova sequenza in formato FASTA
-                    current_read_id = line[1:]  # Rimuovi il carattere di inizio
-                    current_read_sequence = ""
-                else:
-                    if current_read_id is not None:
-                        # Sequenza o linea vuota
-                        current_read_sequence += line
-                        # Salva la sequenza nel dizionario
-                        read_sequences[current_read_id] = current_read_sequence
-            elif file_format.lower() in ['fastq', 'fq']:
-                if line.startswith("@"):
-                    # Inizio di una nuova sequenza in formato FASTQ
-                    current_read_id = line[1:]  # Rimuovi il carattere di inizio
-                    current_read_sequence = ""
-                    current_quality_sequence = ""  # Azzeramento della sequenza di qualità
-                    # Controlli per la Quality Line
-                    line_count = 0; #Se anche la quality line inizia con +, non da problemi con la terza riga                
-                    next_is_quality_line = False
-                elif next_is_quality_line and line_count == 1:
-                    if current_read_id is not None:
-                        # Linea di qualità
-                        current_quality_sequence += line
-                        # Salva la sequenza di qualità nel contenitore associato all'ID
-                        quality_lines[current_read_id] = current_quality_sequence
-                        # Debug: stampa il read_id e la sequenza di qualità
-                        #print(f"DEBUG: {current_read_id} - Quality: {current_quality_sequence}")
-                    line_count = 0
-                    next_is_quality_line = False  # Imposta a False per evitare il salvataggio delle linee di qualità
-                elif line.startswith("+") and line_count < 1:
-                    # linea delimitatore alla qualità
-                    line_count += 1
-                    next_is_quality_line = True
-                else:
-                    if current_read_id is not None:
-                        # Sequenza o linea vuota
-                        current_read_sequence += line
-                        # Salva la sequenza nel dizionario
-                        read_sequences[current_read_id] = current_read_sequence
+        # Modifica la prima riga con il formato desiderato
+        lines[0] = f"@{nome_file_originale}\n"
 
-                
-        # Salva l'ultima sequenza
-        if current_read_id is not None:
-            read_sequences[current_read_id] = current_read_sequence
-            quality_lines[current_read_id] = current_quality_sequence
+        # Scrivi le modifiche nel file
+        with open(file_path, 'w') as file:
+            file.writelines(lines)
 
-    return read_sequences, quality_lines
+def modifica_file_txt_cartella(cartella):
+    # Dizionario per i nomi originali delle read
+    original_names = {}
 
-def process_reads(file_path):
-    # Verifica l'estensione del file per determinare il formato
-    file_extension = get_file_extension(file_path)
-
-    # Verifica che l'estensione del file sia supportata
-    if file_extension not in format_to_start_char:
-        print("Formato del file non supportato.")
+    # Verifica che il percorso della cartella esista
+    if not os.path.exists(cartella):
+        print(f"La cartella {cartella} non esiste.")
         return
 
-    start_char = format_to_start_char[file_extension]
+    # Itera attraverso tutti i file nella cartella
+    for filename in os.listdir(cartella):
+        file_path = os.path.join(cartella, filename)
 
-    # Dizionario per i rappresentanti
+        # Verifica se il file è in formato fastq
+        if filename.lower().endswith('.fastq') and os.path.isfile(file_path):
+            # Ottieni il nome originale del file senza estensione prima della modifica
+            nome_file_originale = os.path.splitext(os.path.basename(file_path))[0]
+
+            # Modifica la prima riga del file
+            modifica_prima_riga(file_path)
+
+            # Salva il nome originale nel dizionario dei nomi originali
+            original_names[nome_file_originale] = nome_file_originale
+    
+    return original_names
+
+
+def wait_for_file(file_path, timeout=10, polling_interval=1):
+    start_time = time.time()
+
+    while not os.path.exists(file_path):
+        if time.time() - start_time > timeout:
+            raise TimeoutError(f"Timeout while waiting for {file_path} to be created.")
+        time.sleep(polling_interval)
+
+
+def rename_file(input_file_path):
+    # Extract the file name and extension
+    file_name, file_extension = os.path.splitext(input_file_path)
+
+    # Map the extensions to be renamed
+    extension_mapping = {'.fq': '.fastq'}
+
+    # Check if the extension is in the mapping
+    if file_extension.lower() in extension_mapping:
+        # Construct the new file path
+        new_file_path = file_name + extension_mapping[file_extension.lower()]
+
+        # Rename the file
+        try:
+            os.rename(input_file_path, new_file_path)
+            return os.path.abspath(new_file_path), os.path.basename(input_file_path)
+        except Exception as e:
+            return f"Error while changing extension: {str(e)}", None
+    elif file_extension.lower() == '.fastq':
+        return input_file_path
+    else:
+        return f"Unsupported extension: {file_extension}", None
+
+def write_reads_to_file(output_filename, reads):
+    with open(output_filename, 'w') as output_file:
+        for read in reads:
+            output_file.write(read)
+
+def split_reads(input_file):
+    print(f'This is {input_file}')
+    # Create the tmp_reads folder if it doesn't exist
+    output_folder = 'tmp_reads'
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # Read lines from the input file
+    with open(input_file, 'r') as input_file_handle:
+        lines = input_file_handle.readlines()
+
+    # Split lines into groups of 4
+    for i in range(0, len(lines), 4):
+        output_filename = os.path.join(output_folder, f'read_{i//4 + 1}.fastq')
+        write_reads_to_file(output_filename, lines[i:i+4])
+
+    # Return the path of the tmp_reads folder
+    return output_folder
+
+def delete_folder(folder):
+    try:
+        shutil.rmtree(folder)
+        print(f"Folder {folder} deleted successfully.")
+    except Exception as e:
+        print(f"Error while deleting folder {folder}: {e}")
+
+def delete_file(file_path):
+    try:
+        os.remove(file_path)
+        print(f"File {file_path} deleted successfully.")
+    except Exception as e:
+        print(f"Error while deleting file {file_path}: {e}")
+
+def count_rows(file_path):
+    try:
+        with open(file_path, 'r') as file:
+            row_count = sum(1 for line in file)
+        return row_count
+    except FileNotFoundError:
+        return "File not found"
+    except Exception as e:
+        return f"An error occurred: {e}"
+
+def remove_apostrophe(file_name):
+    return file_name.replace("'", '')
+
+def calculate_index(representative_path, read_id):
+    output_folder = 'tmp_index'
+
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    index_output_path = os.path.join(output_folder, f'{read_id}.fmd')
+
+    # Command for SVDSS index
+    index_command = ['SVDSS', 'index', '--fastq', representative_path, '--index', index_output_path]
+
+    try:
+        # Execute the SVDSS index command
+        print(f'Executing: {" ".join(index_command)}')
+        while not os.path.exists(index_output_path):
+            result_index = subprocess.run(index_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)  # 10 minutes timeout
+
+        if result_index.returncode != 0:
+            print(f"Error executing SVDSS index: {result_index.stderr.decode()}")
+            return None
+        new_name = remove_apostrophe(index_output_path)
+        os.rename(index_output_path, new_name)        
+        print(f"SVDSS index for {read_id} executed successfully.")
+        print(f"File {new_name}")
+        return new_name
+    except subprocess.TimeoutExpired:
+        print("Timeout during the execution of SVDSS index.")
+        return None
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing SVDSS index: {str(e)}")
+        return None 
+
+def extract_read_info(file_path):
+    try:
+        with open(file_path, 'r') as file:
+            # Read the first line
+            first_line = file.readline().strip()
+            
+            # Remove the first character
+            result = first_line[1:]
+            
+            return result
+    except FileNotFoundError:
+        return "File not found"
+    except Exception as e:
+        return f"Error: {e}"
+
+def execute_search(index_output_path, read_path, read_id):
+    output_folder = 'tmp_search'
+
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    search_output_folder = os.path.join(output_folder, f'search_{read_id}')
+
+    # Command for SVDSS search
+    #search_command = ['SVDSS', 'search', '--index', index_output_path, '--fastq', read_path,'--workdir', search_output_folder]
+    search_command = ['SVDSS', 'search', '--index', index_output_path, '--fastq', read_path, '--assemble','--workdir', search_output_folder]
+    try:
+        # Execute the SVDSS search command
+        #print(f'Executing: {" ".join(search_command)}')
+        while not os.path.exists(f'{search_output_folder}/solution_batch_0.assembled.sfs'):
+            result_search = subprocess.run(search_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)  # 10 minutes timeout
+        #while not os.path.exists(f'{search_output_folder}/solution_batch_0.sfs'):
+        #    result_search = subprocess.run(search_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)  # 10 minutes timeout
+        
+        # if result_search.returncode != 0:
+        #     print(f"Error executing SVDSS search: {result_search.stderr.decode()}")
+        #     return None
+        #print(f"SVDSS search for {read_id} executed successfully.")
+        #print(f'Result path: {search_output_folder}/solution_batch_0.sfs')        
+        #La Funzione wait_for_file non dovrebbe più servire, aggiunto controllo sul metodo
+        #wait_for_file(f'{search_output_folder}/solution_batch_0.assembled.sfs')
+        return f'{search_output_folder}/solution_batch_0.assembled.sfs'
+        #return f'{search_output_folder}/solution_batch_0.sfs'
+    except subprocess.TimeoutExpired:
+        print("Timeout during the execution of SVDSS search.")
+        return None
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing SVDSS search: {str(e)}")
+        return None
+
+def populate_read_sequences(folder_path):
+    # Dictionary for ID, length, and file name information of reads
+    read_info = {}
+
+    try:
+        # List of files in the folder
+        file_list = os.listdir(folder_path)
+
+        for file in file_list:
+            # Check if the file is of type FASTQ or FQ
+            if file.lower().endswith(('.fastq', '.fq')):
+                file_path = os.path.join(folder_path, file)
+
+                with open(file_path, 'r') as file:
+                    # Initialize an empty list for each file's information
+                    info_file = []
+
+                    # Read lines from the file
+                    lines = file.readlines()
+
+                    # Iterate over the lines of the file
+                    i = 0
+                    while i < len(lines):
+                        # Check if the line is a read ID
+                        if lines[i].startswith('@'):
+                            read_id = lines[i].strip().replace('@', '')
+                            i += 1
+
+                            # Read the sequence
+                            sequence = lines[i].strip()
+                            length_read = len(sequence)
+
+                            # Save the information in the read_info dictionary
+                            read_info[read_id] = {'length_read': length_read, 'file_name': file_path}
+
+                        i += 1
+
+        # Sort the read_info dictionary by the length of the reads
+        read_info = dict(sorted(read_info.items(), key=lambda x: x[1]['length_read'], reverse=True))
+
+        return read_info
+
+    except Exception as e:
+        return f"Error while reading files: {e}"
+
+def process_reads(folder_path):
+    # Dictionary for representatives
     representatives = {}
 
-    # Dizionario per i cluster
+    # Dictionary for clusters
     clusters = {}
 
-    # Dizionario per le sequenze delle read
+    # Dictionary for read sequences
     read_sequences = {}
 
-    # Dizionario delle qualità per le sequenze delle read
+    # Dictionary for quality lines of read sequences
     quality_lines = {}
 
-    confronto_values = {}
+    comparison_values = {}
+    soglia_meno_cinquanta ={}
 
-    # Leggi le sequenze da file
-    read_sequences,quality_lines = read_sequences_from_file(file_path, file_extension)
 
-    # Inizializza i rappresentanti con la prima read
-    initial_read_id = list(read_sequences.keys())[0]
-    representatives[initial_read_id] = read_sequences[initial_read_id]
-    clusters[initial_read_id] = [initial_read_id]
+    read_sequences = populate_read_sequences(folder_path)
+    #modifica_file_txt_cartella('tmp_reads')
+    print('Start')
 
-    # Ciclo sulle read e confronto con i rappresentanti
-    # Definisci la soglia per la differenza di lunghezza
-    valore_soglia = 0.004
-    contatore = 0
-    valore_massimo = 0
-    # Ciclo sulle read e confronto con i rappresentanti
-    for read_id, read_sequence in read_sequences.items():
+    first_file = False
+    max_value = 0
+    threshold_value = 0.01
 
-        # Se la read è già un rappresentante, passa alla prossima iterazione
-        contatore += 1
-        print(f"Siamo al {contatore}/{len(read_sequences)} e attualmente i rappresentanti sono {len(representatives)}")
+    for read_id, info in read_sequences.items():
+        length_read = info['length_read']
+        file_name = info['file_name']
 
-        if read_id in representatives:
+        if not first_file:
+            index_path = calculate_index(file_name, read_id)
+            representatives[read_id] = {'length_read': length_read, 'index_path': index_path}
+            first_file = True
             continue
-        best_match_representative = None
-        best_match_distance = float('inf')
-        best_num_sfs = 0
-
-        # Confronto con tutti i rappresentanti
-        for representative_id, representative_sequence in representatives.items():
-            sfs_read_corr, num_sfs_read_corr = stringhe_specifiche(read_sequence, representative_sequence)
-            num_max_sottostringhe_ottenibili = (len(read_sequence)*(len(read_sequence)+1))/2;
-            result_check = 2 * (len(read_sequence) / (len(read_sequence) + len(representative_sequence)))*(num_sfs_read_corr/num_max_sottostringhe_ottenibili)
-            valore_confronto = round(result_check, 6)
-            print(f"Lunghezza read {len(read_sequence)} ")
-            print(f"Lunghezza rapp {len(representative_sequence)} ")
-            print(f"Num sottostringhe ottenute {num_sfs_read_corr} ")
-            print(f"num max sottostringhe {num_max_sottostringhe_ottenibili} ")
-            print(f"calcolo {valore_confronto} ")
-            # Aggiorna il miglior rappresentante se la distanza è minore
-            if  valore_confronto < best_match_distance:
-                best_match_distance = num_sfs_read_corr
-                best_match_representative = representative_id
-                best_num_sfs = num_sfs_read_corr
-                #confronto_values[read_id] = valore_confronto
-                if valore_confronto > valore_massimo:
-                    valore_massimo = valore_confronto
-                    confronto_values[read_id] = valore_confronto
-            #print(f"Questo è il valore del sfs {valore_confronto} ")
-            
-        # Verifica la lunghezza e se soddisfa la regola
-        if valore_confronto <= valore_soglia:
-            # La differenza di lunghezza è inferiore o uguale alla soglia, assegna la read al rappresentante
-            # In questo caso, assegna la read al cluster del rappresentante
-            if best_match_representative in clusters:
-                clusters[best_match_representative].append(read_id)
-            else:
-                clusters[best_match_representative] = [read_id]
         else:
-            # La differenza di lunghezza è superiore alla soglia, inserisci la read come nuovo rappresentante
-            representatives[read_id] = read_sequence
-    
-            # Crea un nuovo cluster con la read come rappresentante
-            clusters[read_id] = [read_id]
+            best_match_representative = None
+            best_match_distance = float('inf')
+            best_num_sfs = 0
+            best_match_percentuale = 0
+            number_max_substrings_obt = (length_read * (length_read + 1)) / 2;
 
-    return representatives, clusters, read_sequences, quality_lines, file_extension, confronto_values
+            for rep_id, rep_info in representatives.items():
+                length_representative = rep_info['length_read']
+                index_representative = rep_info['index_path']
+                print(f'Rep index: {index_representative}')
+                #print(f'Rep length: {length_representative}')
+                
+                file_search_out = execute_search(index_representative, file_name, read_id)
+                #print(f'Search output file: {file_search_out}')                
+                
+                number_sfs = count_rows(file_search_out)
+                #print(f'Number of sfs: {number_sfs}')                
+                
+                length_check = (length_read / (length_read + length_representative))
+                #print(f'Length check: {length_check}')
+                
+                sfs_check = (number_sfs / number_max_substrings_obt)
+                #print(f'Sfs check: {sfs_check}')
+               
+                result_check = 2 * length_check * sfs_check
+                print(f'Result check, threshold to set: {result_check}')
+                comparison_value = round(result_check, 6)
 
-def save_clusters_to_file(clusters, read_sequences, quality_lines, file_extension):
-    for representative_id, cluster_reads in clusters.items():
-        folder_path = f"cluster_{representative_id}"
-        os.makedirs(folder_path, exist_ok=True)
+                # Altra Logica su OVERLAP SFS
+                length_overlap_sfs = sum_overlap_sfs(file_search_out)
 
-        # Determina il formato del file iniziale e il carattere di inizio delle read
-        original_format = file_extension.lower()
-        start_char = format_to_start_char[original_format]
+                diff_on_total = length_read - length_overlap_sfs
+                print(f'la lunghezza della stringa è {length_read}')
+                print(f'la differenza tra lunghezza e overlap è {diff_on_total}')
+                percentuale_diff_length = round(diff_on_total/length_read*100,2)
 
-        # Salva le read associate al cluster nel file
-        file_path = os.path.join(folder_path, f"cluster_{representative_id}_reads.{original_format}")
-        with open(file_path, 'w') as cluster_file:
-            for read_id in cluster_reads:
-                cluster_file.write(f"{start_char}{read_id}\n{read_sequences[read_id]}\n")
+                delete_file(file_search_out)
+                
+                #if comparison_value < best_match_distance:
+                #    best_match_distance = comparison_value
+                #    best_match_representative = rep_id
+                #    best_num_sfs = number_sfs
 
-                # Se il formato è FASTQ o FQ, aggiungi le qualità dalla read originale
-                if original_format in ['fastq', 'fq']:
-                    # Verifica se la chiave esiste in quality_lines prima di accedere
-                    quality_line = quality_lines.get(read_id, "")
-                    cluster_file.write(f"+\n{quality_line}\n")
+                if (percentuale_diff_length >= best_match_percentuale):
+                    best_match_percentuale = percentuale_diff_length;
+                    best_match_representative = rep_id;
+                    print(f'{Fore.MAGENTA}Questo è il branch di selezione best {best_match_percentuale} {Style.RESET_ALL}')
+                if comparison_value > max_value:
+                    #print(f'Valere attuale {comparison_value}, valore massimo old {max_value}')
+                    max_value = comparison_value
+                    comparison_values[read_id] = comparison_value
 
-def get_quality_line(file_path, read_id):
-    """
-    Restituisce la linea di qualità associata a un dato identificatore di read da un file FASTQ.
-    """
-    with open(file_path, 'r') as file:
-        in_sequence = False
-        for line in file:
-            if in_sequence:
-                # Se la riga corrente inizia con "+" indica l'inizio delle linee di qualità
-                if line.startswith("+"):
-                    # Leggi la linea successiva come linea di qualità
-                    quality_line = next(file).strip()
-                    return quality_line
-            if line.startswith(read_id):
-                in_sequence = True
+                if(percentuale_diff_length>=30):
+                   print(f"{Fore.GREEN}SIMILE! Con percentuale di somiglianza {percentuale_diff_length}{Style.RESET_ALL}")
+                   break
+                else:
+                   print(f"{Fore.RED}NON SIMILE! Con percentuale di somiglianza {percentuale_diff_length}{Style.RESET_ALL}")
+                   soglia_meno_cinquanta[read_id] = percentuale_diff_length
+                
 
-    return ""
+            #if best_match_distance <= threshold_value:
+            if (best_match_percentuale>=30):
+                print(f'{Fore.YELLOW}opto per il cluste già esistente, perché {best_match_percentuale}{Style.RESET_ALL}')
+                if best_match_representative in clusters:
+                    clusters[best_match_representative].append(read_id)
+                else:
+                    clusters[best_match_representative] = [read_id]
+            else:
+                print(f'{Fore.BLUE}opto per crea un nuovo rappresentante. {best_match_percentuale}{Style.RESET_ALL}')
+                index_path = calculate_index(file_name, read_id)
+                # The length difference is above the threshold, insert the read as a new representative
+                representatives[read_id] = {'length_read': length_read, 'index_path': index_path}
+
+                # Create a new cluster with the read as the representative
+                clusters[read_id] = [read_id]
+
+    return soglia_meno_cinquanta, max_value, representatives, clusters, read_sequences, quality_lines, comparison_values
 
 def main():
 
-    tempo_iniziale = time.time()
-
-    # Utilizza argparse per gestire gli argomenti da riga di comando
-    parser = argparse.ArgumentParser(description='Processo di clustering delle reads.')
-    parser.add_argument('file_path', metavar='file_path', type=str, help='Il percorso del file da processare')
-    parser.add_argument('--threads', type=int, default=1, help='Il numero di threads da utilizzare (predefinito: 1)')
+    # Use argparse to handle command line arguments
+    parser = argparse.ArgumentParser(description='Read clustering process.')
+    parser.add_argument('file_path', metavar='file_path', type=str, help='The path of the FASTQ file to process')
+    parser.add_argument('--threads', type=int, default=1, help='The number of threads to use (default: 1)')
 
     args = parser.parse_args()
 
-    # Ottieni il percorso del file e il numero di thread dall'argomento della riga di comando
+    # Get the file path and number of threads from the command line argument
     file_path = args.file_path
-    numero_thread = args.threads
+    num_threads = args.threads
 
-    # Imposta il numero desiderato di thread
-    threading._DummyThread._maxsize = numero_thread
-
-    reads_count = count_reads(file_path)
-
-    if reads_count == -1:
-        return
-
-    reads_count = count_reads(file_path)
-
-    if reads_count == -1:
-        return
-
-    representatives, clusters, read_sequences, quality_lines, file_extension, confronto_values = process_reads(file_path)
+    # Set the desired number of threads
+    threading._DummyThread._maxsize = num_threads
     
-    save_clusters_to_file(clusters, read_sequences, quality_lines, file_extension)
+    renamed_file_path = rename_file(file_path)
+    output_folder_path = split_reads(renamed_file_path)
+    original_names = modifica_file_txt_cartella('tmp_reads')
+    lista_meno_cinq, max_value, representatives, clusters, read_sequences, quality_lines, comparison_values = process_reads(output_folder_path)
+    log_file_path = "comparison_values_log.txt"  # Imposta il percorso del file di log
+    write_comparison_values_to_log(comparison_values, log_file_path)
 
-    log_file_path = 'log.txt'
-    with open(log_file_path, 'w') as log_file:
-        for read_id, confronto_value in confronto_values.items():
-            log_file.write(f"{read_id}: {confronto_value}\n")
+    results_folder = os.path.dirname(os.path.abspath(file_path))
+    create_cluster_folders(results_folder, clusters, original_names)
 
-    print(f"Il numero di reads nel file '{file_path}' è: {len(read_sequences)}")
-    print(f"Il numero di cluster è: {len(clusters)}")
-
-    # Stampa il numero di reads nei file creati in output
-    print("\nNumero di reads nei file creati in output:")
-    for representative_id, cluster_reads in clusters.items():
-        file_path = f"cluster_{representative_id}/cluster_{representative_id}_reads.{file_extension}"
-        num_reads = len(cluster_reads)
-        print(f"{file_path}: {num_reads} reads")
-
-    tempo_finale = time.time()
-    tempo_trascorso = tempo_finale - tempo_iniziale
-    print(f"Tempo impiegato: {tempo_trascorso} secondi")
-
-def stringhe_specifiche_old(stringa1, stringa2):
-    # Inizializziamo una lista vuota per memorizzare le stringhe specifiche
-    stringhe_specifiche_list = []
-
-    # Iteriamo attraverso tutte le sottostringhe della prima stringa
-    for i in range(len(stringa1)):
-        for j in range(i + 1, len(stringa1) + 1):
-            sottostringa = stringa1[i:j]
-
-            # Verifichiamo se la sottostringa non è presente nella seconda stringa
-            if sottostringa not in stringa2:
-                # Aggiungiamo la sottostringa alla lista delle stringhe specifiche
-                stringhe_specifiche_list.append(sottostringa)
-
-    return stringhe_specifiche_list, len(stringhe_specifiche_list)
-
-def stringhe_specifiche(stringa1, stringa2):
-    # Inizializziamo una lista vuota per memorizzare le stringhe specifiche
-    old_St = []
-    print("Start: Calcolo Stringhe Spec")
-    # Iteriamo attraverso tutte le sottostringhe della prima stringa
-    for i in range(len(stringa1)):
-        for j in range(i + 1, len(stringa1) + 1):
-            sottostringa = stringa1[i:j]
-
-            # Verifichiamo se la sottostringa non è presente nella seconda stringa
-            if sottostringa not in stringa2:
-                # Verifichiamo se nessuna sottostringa più corta è una sottostringa di questa
-                if all(sottostringa not in old_str for old_str in old_St):
-                    # Aggiungiamo la sottostringa alla lista delle stringhe specifiche
-                    old_St.append(sottostringa)
-    # Troviamo St come l'insieme di tutte le stringhe da old_St per cui nessuna sottostringa più corta è una sottostringa
-    St = [s for s in old_St if all(s not in other_str for other_str in old_St if len(other_str) < len(s))]
-
-    return St, len(St)
+    print(f'There are {len(representatives)} representatives')
+    print(f'Questo è il valore max di distanza {max_value}')
+    delete_folder("tmp_search")
+    delete_folder("tmp_index")
+    delete_folder("tmp_reads")
+    print(f'Ci sono {len(lista_meno_cinq)} reads differenti')
 
 if __name__ == "__main__":
     main()
